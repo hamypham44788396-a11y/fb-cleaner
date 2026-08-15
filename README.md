@@ -88,6 +88,10 @@ When the numbers look right, uncheck the box. The button turns red and says
 - **↺** resets to step 1 and zeroes the counter. **Stop only pauses** — it deliberately
   remembers its place so it can survive reloads, which means Stop→Start *resumes* rather
   than restarts.
+- **A run belongs to the tab that started it.** The same tab resumes after a reload; a
+  different tab won't silently pick the run back up, and neither will anything after 30
+  minutes of inactivity. You'll see a "paused here" notice and have to press start again.
+  Without that guard, opening Facebook days later would quietly continue deleting.
 - Leave the speed on **slow**. The randomized delays are there on purpose; Facebook
   restricts accounts that generate fast robotic activity.
 - Steps 1–2 move things to **Trash**, recoverable for 30 days. **Step 4 is the

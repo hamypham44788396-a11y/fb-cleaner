@@ -30,6 +30,7 @@ const L = {
     deletedTotal: 'Deleted so far',
     footer: 'Your friends are never touched.<br>Deletion is permanent — be careful.',
     ready: 'Ready. Leave dry run on for the first pass.',
+    otherTab: 'A run was left open in another tab. Paused here — press start to continue in this tab.',
     resuming: 'Resuming where it left off…',
     stopped: 'Stopped on request.',
     resetDone: 'Back to step 1 — press start.',
@@ -79,6 +80,7 @@ const L = {
     deletedTotal: 'اتمسح إجمالاً',
     footer: 'الأصدقاء مش بيتأثروا نهائياً.<br>الحذف نهائي — خد بالك.',
     ready: 'جاهز. سيب «وضع التجربة» شغال أول مرة.',
+    otherTab: 'فيه تشغيل سايب في تبويب تاني. متوقف هنا — دوس ابدأ لو عايزه يكمّل في التبويب ده.',
     resuming: 'بيكمّل من حيث ما وقف…',
     stopped: 'اتوقف بالطلب.',
     resetDone: 'اترجّع لأول الطابور — دوس ابدأ.',
@@ -127,12 +129,26 @@ const DEFAULTS = {
   count: 0,
   step: 0,           // position in the chain when mode = auto
   navTries: 0,       // guard against a navigation loop
+  session: null,     // which browser tab owns this run
+  lastTick: 0,       // epoch ms of the last step, for the staleness guard
   lang: guessLang(),
 };
 let S = { ...DEFAULTS };
 let abort = false;
 
 const save = () => chrome.storage.local.set({ fbc: S });
+
+/* A run belongs to ONE tab. sessionStorage is per-tab and survives reloads,
+   which is exactly the lifetime we want: the same tab resumes after a reload,
+   but a different tab opened later does NOT silently pick the run back up.
+   Without this, opening Facebook days later would resume deleting on its own. */
+const SESSION_KEY = 'fbcSession';
+const newSession = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+const readSession = () => { try { return sessionStorage.getItem(SESSION_KEY); } catch { return null; } };
+const claimSession = id => { try { sessionStorage.setItem(SESSION_KEY, id); } catch {} };
+const STALE_MS = 30 * 60 * 1000;
+const ownsRun = () => S.session && readSession() === S.session &&
+                      Date.now() - (S.lastTick || 0) < STALE_MS;
 const load = () => new Promise(r =>
   chrome.storage.local.get('fbc', d => r(Object.assign({}, DEFAULTS, d.fbc || {}))));
 
@@ -451,6 +467,7 @@ function onTarget(task) {
 /* ================================ runner ================================== */
 async function tick() {
   if (abort) return;
+  S.lastTick = Date.now();
   const task = taskOf();
   if (!task) { log(t('chainDone', S.count), 'ok'); stop(); return; }
 
@@ -504,6 +521,9 @@ async function advance(task) {
 async function start() {
   abort = false;
   S.running = true;
+  S.session = newSession();
+  claimSession(S.session);
+  S.lastTick = Date.now();
   if (S.mode === 'auto' && S.step >= CHAIN.length) S.step = 0;
   S.navTries = 0;
   await save(); paint();
@@ -678,10 +698,14 @@ function ui() {
   ui();
   paint();
 
-  if (S.running) {
+  if (S.running && ownsRun()) {
     log(t('resuming'), 'ok');
     await sleep(6000);              // let Facebook render the page
     if (S.running) { abort = false; tick(); }
+  } else if (S.running) {
+    S.running = false;              // اتساب في تبويب تاني أو بقى قديم
+    await save(); paint();
+    log(t('otherTab'), 'warn');
   } else {
     log(t('ready'));
   }
