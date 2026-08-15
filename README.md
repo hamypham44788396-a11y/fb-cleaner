@@ -16,6 +16,9 @@ after every page reload** — which is the part console scripts get wrong.
 The interface is **bilingual — English and Arabic**. It follows your browser language and
 you can flip it any time with the `ع` / `EN` button in the panel header.
 
+Every action it takes is **written to a persistent log you can export as CSV** — so you can
+answer "what did it actually delete, and when?" long after the run is over.
+
 ---
 
 ## Why another one?
@@ -92,6 +95,10 @@ When the numbers look right, uncheck the box. The button turns red and says
   different tab won't silently pick the run back up, and neither will anything after 30
   minutes of inactivity. You'll see a "paused here" notice and have to press start again.
   Without that guard, opening Facebook days later would quietly continue deleting.
+- **Everything it does is recorded.** Timestamp, section, dry-or-live, action and a
+  snippet of the item — exportable as CSV from the panel. The on-screen log is capped and
+  wiped on every reload; this one isn't. For a tool that deletes permanently, being able to
+  reconstruct a run afterwards matters more than it sounds like it does.
 - Leave the speed on **slow**. The randomized delays are there on purpose; Facebook
   restricts accounts that generate fast robotic activity.
 - Steps 1–2 move things to **Trash**, recoverable for 30 days. **Step 4 is the
@@ -160,9 +167,12 @@ then Escape as a last resort.
 ## Privacy
 
 Zero network requests. No analytics, no telemetry, no remote config. The only permissions
-requested are `storage` (to remember which step it's on) and host access to
-`facebook.com`. It's ~600 lines of readable JavaScript in
+requested are `storage` and host access to `facebook.com`. It's readable JavaScript in
 [`content.js`](content.js) — read it before you run it.
+
+The action log lives in `chrome.storage.local` on your machine and nothing ever uploads it.
+It does contain snippets of your own content (post and comment text, group names), which is
+the whole point of an audit trail — and why there's a **Clear** button right next to Export.
 
 ---
 

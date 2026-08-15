@@ -52,6 +52,13 @@ const L = {
     errUid: 'Account id not found — make sure you’re logged in.',
     noUnlike: 'No Unlike after two tries — skipped',
     noUnlikePage: 'No unlike option — skipped',
+    logRow: 'Action log',
+    exportBtn: '⭳ CSV',
+    clearBtn: 'Clear',
+    entries: n => `${n} actions recorded`,
+    cleared: 'Action log cleared.',
+    exported: n => `Exported ${n} actions.`,
+    logEmpty: 'Nothing recorded yet.',
     tasks: {
       posts:     ['Posts, photos and videos', 'Opens “Your posts, photos and videos” and moves everything to trash.'],
       comments:  ['Comments', 'Opens the Comments section of your activity log.'],
@@ -102,6 +109,13 @@ const L = {
     errUid: 'مش لاقي رقم حسابك — اتأكد إنك مسجّل دخول.',
     noUnlike: 'مش لاقي Unlike بعد محاولتين — تخطّيت',
     noUnlikePage: 'مش لاقي «إلغاء الإعجاب» — تخطّيت',
+    logRow: 'سجل العمليات',
+    exportBtn: '⭳ CSV',
+    clearBtn: 'مسح',
+    entries: n => `${n} عملية متسجّلة`,
+    cleared: 'سجل العمليات اتمسح.',
+    exported: n => `اتصدّر ${n} عملية.`,
+    logEmpty: 'مفيش عمليات متسجّلة لسه.',
     tasks: {
       posts:     ['البوستات والصور والفيديوهات', 'بيفتح Your posts, photos and videos ويرمي كل حاجة في السلة.'],
       comments:  ['التعليقات', 'بيفتح قسم التعليقات في سجل النشاط.'],
@@ -151,6 +165,67 @@ const ownsRun = () => S.session && readSession() === S.session &&
                       Date.now() - (S.lastTick || 0) < STALE_MS;
 const load = () => new Promise(r =>
   chrome.storage.local.get('fbc', d => r(Object.assign({}, DEFAULTS, d.fbc || {}))));
+
+/* --------------------------- سجل العمليات الدائم -------------------------
+   The in-panel log is DOM only and dies on every reload. For a tool that
+   deletes permanently that isn't good enough — you can't answer "what did it
+   actually do three hours ago?". Every action is appended here instead, and
+   survives reloads, restarts and extension updates.
+   It never leaves the machine: no network code touches it, and Clear wipes it.
+   ------------------------------------------------------------------------ */
+const LOG_KEY = 'fbcLog';
+const LOG_MAX = 5000;                 // ring buffer — oldest entries drop off
+let logChain = Promise.resolve();     // serialised so concurrent writes can't clobber
+let logSize = 0;
+
+const readLog = async () => (await chrome.storage.local.get(LOG_KEY))[LOG_KEY] || [];
+
+function record(action, detail = '') {
+  const e = {
+    t: Date.now(),
+    mode: S.mode,
+    step: S.mode === 'auto' ? CHAIN[S.step] || '-' : S.mode,
+    run: S.dry ? 'dry' : 'live',
+    action,
+    detail: String(detail).replace(/\s+/g, ' ').trim().slice(0, 180),
+  };
+  logChain = logChain.then(async () => {
+    const arr = await readLog();
+    arr.push(e);
+    if (arr.length > LOG_MAX) arr.splice(0, arr.length - LOG_MAX);
+    logSize = arr.length;
+    await chrome.storage.local.set({ [LOG_KEY]: arr });
+    paintLogCount();
+  }).catch(() => {});
+}
+
+function csvCell(v) { return '"' + String(v ?? '').replace(/"/g, '""') + '"'; }
+
+async function exportLog() {
+  await logChain;                                   // flush anything in flight
+  const arr = await readLog();
+  if (!arr.length) { log(t('logEmpty'), 'warn'); return; }
+  const head = ['time', 'mode', 'section', 'run', 'action', 'detail'];
+  const body = arr.map(e => [new Date(e.t).toISOString(), e.mode, e.step, e.run, e.action, e.detail]);
+  const csv = '\uFEFF' + [head, ...body].map(r => r.map(csvCell).join(',')).join('\r\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `fb-cleaner-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+  document.documentElement.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 8000);
+  log(t('exported', arr.length), 'ok');
+}
+
+async function clearLog() {
+  await logChain;
+  await chrome.storage.local.set({ [LOG_KEY]: [] });
+  logSize = 0;
+  paintLogCount();
+  log(t('cleared'), 'warn');
+}
 
 /* ------------------------------ helpers ---------------------------------- */
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -357,9 +432,9 @@ async function reactionsLoop() {
       await pause(800, 1200);
       const m = await waitFor(menu, 5000);
       const un = m && pick(m, UN);
-      if (un) { un.click(); bump(); await pause(1200, 2000); done = true; }
+      if (un) { un.click(); bump('reaction.remove', txt(b)); await pause(1200, 2000); done = true; }
     }
-    if (!done) { await closeOverlay(); log(t('noUnlike'), 'warn'); }
+    if (!done) { await closeOverlay(); record('reaction.skip', txt(b)); log(t('noUnlike'), 'warn'); }
   }
 }
 
@@ -380,7 +455,8 @@ async function pagesLoop() {
     await pause(700, 1100);
     const m = await waitFor(menu, 4000);
     const un = m && pick(m, [RE_UNLIKE]);
-    if (un) { un.click(); bump(); } else { await closeOverlay(); log(t('noUnlikePage'), 'warn'); }
+    if (un) { un.click(); bump('page.unlike', txt(b)); }
+    else { await closeOverlay(); record('page.skip', txt(b)); log(t('noUnlikePage'), 'warn'); }
     await pause(1200, 2200);
   }
 }
@@ -406,7 +482,7 @@ async function groupsLoop() {
     await pause(900, 1400);
     const dlg = await waitFor(dialog, 4000);
     const cf = dlg && pick(dlg, [RE_LEAVE, /^(confirm|leave|تأكيد|مغادرة)$/i]);
-    if (cf) { cf.click(); bump(); } else { await closeOverlay(); }
+    if (cf) { cf.click(); bump('group.leave', txt(b)); } else { await closeOverlay(); record('group.skip', txt(b)); }
     await pause(1400, 2400);
   }
 }
@@ -486,11 +562,13 @@ async function tick() {
   const r = await bulkBatch(task);
   if (abort) return;
 
-  if (r.err)   { log(r.err, 'err'); stop(); return; }
+  if (r.err)   { record('error', r.err); log(r.err, 'err'); stop(); return; }
   if (r.empty) { await advance(task); return; }
-  if (r.dry)   { log(t('dryBatch', tn(task.key), r.n, r.btn), 'warn'); await advance(task); return; }
+  if (r.dry)   { record('dry.batch', `${task.key} n=${r.n} button=${r.btn}`);
+                 log(t('dryBatch', tn(task.key), r.n, r.btn), 'warn'); await advance(task); return; }
 
   S.count += r.n;
+  record('batch.delete', `${task.key} n=${r.n}`);
   log(t('batchDone', tn(task.key), r.n, S.count), 'ok');
   await save(); paint();
 
@@ -508,6 +586,7 @@ function navigate(task) {
 }
 
 async function advance(task) {
+  record('step.done', task.key);
   log(t('stepDone', tn(task.key)), 'ok');
   if (S.mode !== 'auto') { stop(); return; }
   S.step++;
@@ -521,6 +600,7 @@ async function advance(task) {
 async function start() {
   abort = false;
   S.running = true;
+  record('run.start', `${S.mode} ${S.dry ? 'dry' : 'LIVE'} speed=${S.speed}`);
   S.session = newSession();
   claimSession(S.session);
   S.lastTick = Date.now();
@@ -531,16 +611,18 @@ async function start() {
 }
 
 function stop() {
+  if (S.running) record('run.stop', `count=${S.count}`);
   abort = true;
   S.running = false;
   save(); paint();
 }
 
-const bump = () => { S.count++; paint(); save(); };
+const bump = (action, detail) => { S.count++; record(action, detail); paint(); save(); };
 
 /* ================================ panel =================================== */
 let $panel, $log, $count, $start, $stop, $mode, $dry, $speed, $sval, $hint, $step,
-    $lang, $modeLbl, $dryLbl, $statLbl, $foot, $reset, $min, $x, $bubble;
+    $lang, $modeLbl, $dryLbl, $statLbl, $foot, $reset, $min, $x, $bubble,
+    $logLbl, $logN, $export, $clear;
 
 function log(msg, cls = '') {
   if (!$log) return;
@@ -550,6 +632,10 @@ function log(msg, cls = '') {
   $log.appendChild(d);
   $log.scrollTop = $log.scrollHeight;
   while ($log.children.length > 60) $log.removeChild($log.firstChild);
+}
+
+function paintLogCount() {
+  if ($logN) $logN.textContent = t('entries', logSize);
 }
 
 function paintOptions() {
@@ -568,6 +654,10 @@ function paint() {
   $dryLbl.textContent  = t('dryLabel');
   $statLbl.textContent = t('deletedTotal');
   $foot.innerHTML      = t('footer');
+  $logLbl.textContent  = t('logRow');
+  $export.textContent  = t('exportBtn');
+  $clear.textContent   = t('clearBtn');
+  paintLogCount();
   $lang.textContent    = S.lang === 'ar' ? 'EN' : 'ع';
   $stop.textContent    = t('stop');
   $reset.title = t('resetTitle');
@@ -624,6 +714,18 @@ function ui() {
       </div>
 
       <div class="fbc-stat"><span id="fbc-statlbl"></span><b id="fbc-count">0</b></div>
+
+      <div class="fbc-audit">
+        <div class="fbc-audit-top">
+          <span id="fbc-loglbl"></span>
+          <span class="fbc-audit-n" id="fbc-logn"></span>
+        </div>
+        <div class="fbc-audit-btns">
+          <button id="fbc-export"></button>
+          <button id="fbc-clear"></button>
+        </div>
+      </div>
+
       <div id="fbc-log"></div>
       <p class="fbc-foot" id="fbc-foot"></p>
     </div>`;
@@ -653,6 +755,10 @@ function ui() {
   $foot    = p.querySelector('#fbc-foot');
   $min     = p.querySelector('#fbc-min');
   $x       = p.querySelector('#fbc-x');
+  $logLbl  = p.querySelector('#fbc-loglbl');
+  $logN    = p.querySelector('#fbc-logn');
+  $export  = p.querySelector('#fbc-export');
+  $clear   = p.querySelector('#fbc-clear');
 
   paintOptions();
 
@@ -670,6 +776,8 @@ function ui() {
     save(); paint();
     log(t('resetDone'), 'ok');
   };
+  $export.onclick = () => exportLog();
+  $clear.onclick  = () => clearLog();
   $min.onclick    = () => p.classList.toggle('fbc-min');
   $x.onclick      = () => { p.style.display = 'none'; $bubble.style.display = ''; };
   $bubble.onclick = () => { p.style.display = ''; $bubble.style.display = 'none'; };
@@ -696,6 +804,7 @@ function ui() {
 (async () => {
   S = await load();
   ui();
+  logSize = (await readLog()).length;
   paint();
 
   if (S.running && ownsRun()) {

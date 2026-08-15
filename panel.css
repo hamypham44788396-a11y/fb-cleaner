@@ -113,3 +113,21 @@
   user-select: none;
 }
 #fbc-bubble:hover { filter: brightness(1.15); }
+
+.fbc-audit {
+  margin-top: 9px; padding: 8px 10px;
+  background: #0d1015; border: 1px solid #2a303b; border-radius: 9px;
+}
+.fbc-audit-top {
+  display: flex; justify-content: space-between; align-items: center;
+  color: #9aa3b2; font-size: 11px; margin-bottom: 7px;
+}
+.fbc-audit-n { color: #4ec9a0; font-weight: 700; }
+.fbc-audit-btns { display: flex; gap: 6px; }
+.fbc-audit-btns button {
+  flex: 1; padding: 6px; border: 0; border-radius: 7px;
+  background: #1c2430; color: #9aa3b2;
+  font-family: inherit; font-size: 11px; font-weight: 700; cursor: pointer;
+}
+.fbc-audit-btns button:hover { background: #26303f; color: #e6e8ec; }
+#fbc-clear:hover { background: #4a2320; color: #ff8b84; }
