@@ -59,6 +59,8 @@ const L = {
     cleared: 'Action log cleared.',
     exported: n => `Exported ${n} actions.`,
     logEmpty: 'Nothing recorded yet.',
+    stuck: (name, n) => `${name}: ${n} item(s) won't delete from here — skipping. `
+      + `Profile/cover photos and some album photos have to be removed from the album itself.`,
     tasks: {
       posts:     ['Posts, photos and videos', 'Opens “Your posts, photos and videos” and moves everything to trash.'],
       comments:  ['Comments', 'Opens the Comments section of your activity log.'],
@@ -116,6 +118,8 @@ const L = {
     cleared: 'سجل العمليات اتمسح.',
     exported: n => `اتصدّر ${n} عملية.`,
     logEmpty: 'مفيش عمليات متسجّلة لسه.',
+    stuck: (name, n) => `${name}: ${n} عنصر مش راضي يتمسح من هنا — تخطّيت. `
+      + `صور البروفايل والكفر وبعض صور الألبومات لازم تتمسح من الألبوم نفسه.`,
     tasks: {
       posts:     ['البوستات والصور والفيديوهات', 'بيفتح Your posts, photos and videos ويرمي كل حاجة في السلة.'],
       comments:  ['التعليقات', 'بيفتح قسم التعليقات في سجل النشاط.'],
@@ -143,6 +147,9 @@ const DEFAULTS = {
   count: 0,
   step: 0,           // position in the chain when mode = auto
   navTries: 0,       // guard against a navigation loop
+  sig: null,         // fingerprint of the last batch, to detect no progress
+  stuck: 0,          // consecutive rounds with an unchanged fingerprint
+  pending: 0,        // items clicked but not yet confirmed gone
   session: null,     // which browser tab owns this run
   lastTick: 0,       // epoch ms of the last step, for the staleness guard
   lang: guessLang(),
@@ -340,6 +347,19 @@ async function loadMore(rounds = 7) {
   await pause(900, 1300);
 }
 
+/* Fingerprint of what the section currently shows. If this is identical after
+   a delete + reload, nothing actually got deleted — the click "succeeded" but
+   the item is still there. Profile pictures and some album photos behave
+   exactly like that, and without this check the run loops on them forever
+   while the counter happily climbs. */
+const pageSig = () => {
+  const n = document.querySelectorAll('input[type="checkbox"]').length;
+  const heads = buttons()
+    .filter(b => /^more options for/i.test(txt(b)))
+    .slice(0, 3).map(b => txt(b).slice(18, 70)).join('|');
+  return n + '::' + heads;
+};
+
 /* ---------------------------- batch selection ----------------------------- */
 const nChecked = () => document.querySelectorAll('input[type="checkbox"]:checked').length;
 
@@ -375,7 +395,6 @@ async function selectBatch() {
 
 /* --------------------- one batch from the activity log -------------------- */
 async function bulkBatch(task) {
-  await loadMore();
   if (document.querySelectorAll('input[type="checkbox"]').length < 2)
     return { empty: true };
 
@@ -559,6 +578,26 @@ async function tick() {
   if (!onTarget(task)) { navigate(task); return; }
   S.navTries = 0;
 
+  await loadMore();
+  const sig = pageSig();
+  if (S.sig === sig) {
+    S.stuck = (S.stuck || 0) + 1;
+    if (S.stuck >= 2) {
+      const n = S.pending || 0;
+      record('stuck', `${task.key} items=${n}`);
+      log(t('stuck', tn(task.key), n), 'err');
+      S.pending = 0; S.stuck = 0; S.sig = null;
+      await save();
+      await advance(task);
+      return;
+    }
+  } else {
+    /* the section moved, so the previous batch really did go */
+    if (S.pending) { S.count += S.pending; S.pending = 0; }
+    S.stuck = 0;
+  }
+  S.sig = sig;
+
   const r = await bulkBatch(task);
   if (abort) return;
 
@@ -567,7 +606,7 @@ async function tick() {
   if (r.dry)   { record('dry.batch', `${task.key} n=${r.n} button=${r.btn}`);
                  log(t('dryBatch', tn(task.key), r.n, r.btn), 'warn'); await advance(task); return; }
 
-  S.count += r.n;
+  S.pending = r.n;          // confirmed on the next round, once the page moves
   record('batch.delete', `${task.key} n=${r.n}`);
   log(t('batchDone', tn(task.key), r.n, S.count), 'ok');
   await save(); paint();
@@ -589,8 +628,10 @@ async function advance(task) {
   record('step.done', task.key);
   log(t('stepDone', tn(task.key)), 'ok');
   if (S.mode !== 'auto') { stop(); return; }
+  if (S.pending) { S.count += S.pending; S.pending = 0; }
   S.step++;
   S.navTries = 0;
+  S.sig = null; S.stuck = 0;
   await save(); paint();
   if (S.step >= CHAIN.length) { log(t('chainDone', S.count), 'ok'); stop(); return; }
   await pause(1500, 2500);
@@ -763,7 +804,11 @@ function ui() {
   paintOptions();
 
   $lang.onclick  = () => { S.lang = S.lang === 'ar' ? 'en' : 'ar'; save(); paintOptions(); paint(); };
-  $mode.onchange = () => { S.mode = $mode.value; S.step = 0; S.count = 0; S.navTries = 0; save(); paint(); };
+  $mode.onchange = () => {
+    S.mode = $mode.value; S.step = 0; S.count = 0; S.navTries = 0;
+    S.sig = null; S.stuck = 0; S.pending = 0;
+    save(); paint();
+  };
   $dry.onchange  = () => { S.dry = $dry.checked; save(); paint(); };
   $speed.oninput = () => { S.speed = +$speed.value; save(); paint(); };
   $start.onclick = () => start();
@@ -773,6 +818,7 @@ function ui() {
   $reset.onclick = () => {
     stop();
     S.step = 0; S.count = 0; S.navTries = 0;
+    S.sig = null; S.stuck = 0; S.pending = 0;
     save(); paint();
     log(t('resetDone'), 'ok');
   };
