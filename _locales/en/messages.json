@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "FB Cleaner — bulk-delete your Facebook content",
+    "description": "Extension name"
+  },
+  "extDesc": {
+    "message": "Bulk-delete your own posts, photos, comments and reactions on Facebook, then empty the trash. Your friends are never touched.",
+    "description": "Extension description"
+  }
+}
